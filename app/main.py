@@ -18,9 +18,10 @@ from app.database.connection import configure_windows_event_loop
 # On Windows, psycopg async requires SelectorEventLoop instead of ProactorEventLoop
 configure_windows_event_loop()
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, field_validator
 
 from google.adk import Runner
 from google.adk.agents import LiveRequestQueue
@@ -31,6 +32,7 @@ from app.agent.agent import create_agent
 from app.config import (
     GEMINI_API_KEY,
     GEMINI_LIVE_MODEL,
+    GEMINI_TEXT_MODEL,
     SERVER_HOST,
     SERVER_PORT,
     log_config_summary,
@@ -42,6 +44,41 @@ logger = logging.getLogger(__name__)
 
 # Application name constant
 APP_NAME = "trijotech-voice-agent"
+TEXT_API_USER_ID = "text_api_user"
+
+
+class ChatRequest(BaseModel):
+    """Request body for a turn in the text conversation."""
+
+    message: str = Field(min_length=1, max_length=10000)
+    session_id: str | None = None
+
+    @field_validator("message")
+    @classmethod
+    def strip_message(cls, message: str) -> str:
+        """Remove surrounding whitespace and reject blank chat turns."""
+        message = message.strip()
+        if not message:
+            raise ValueError("message must not be blank")
+        return message
+
+    @field_validator("session_id")
+    @classmethod
+    def strip_session_id(cls, session_id: str | None) -> str | None:
+        """Normalize an optional session ID and reject blank values."""
+        if session_id is None:
+            return None
+        session_id = session_id.strip()
+        if not session_id:
+            raise ValueError("session_id must not be blank")
+        return session_id
+
+
+class ChatResponse(BaseModel):
+    """Text response and conversation identifier."""
+
+    response: str
+    session_id: str
 
 
 @asynccontextmanager
@@ -496,6 +533,64 @@ async def index():
 async def health():
     """Health check endpoint."""
     return {"status": "ok", "agent": "trijotech-voice-agent"}
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def text_chat(request: ChatRequest) -> ChatResponse:
+    """Run one text turn, continuing an existing ADK session when provided."""
+    session_service = get_session_service()
+    if request.session_id is not None:
+        session = await session_service.get_session(
+            app_name=APP_NAME,
+            user_id=TEXT_API_USER_ID,
+            session_id=request.session_id,
+        )
+        if session is None:
+            raise HTTPException(status_code=404, detail="Chat session not found.")
+    else:
+        session = await session_service.create_session(
+            app_name=APP_NAME,
+            user_id=TEXT_API_USER_ID,
+        )
+
+    runner = Runner(
+        agent=create_agent(model=GEMINI_TEXT_MODEL),
+        app_name=APP_NAME,
+        session_service=session_service,
+    )
+
+    response_parts: list[str] = []
+    try:
+        async for event in runner.run_async(
+            user_id=TEXT_API_USER_ID,
+            session_id=session.id,
+            new_message=genai_types.Content(
+                role="user",
+                parts=[genai_types.Part.from_text(text=request.message)],
+            ),
+        ):
+            if event.is_final_response() and event.content:
+                response_parts.extend(
+                    part.text
+                    for part in event.content.parts
+                    if part.text
+                )
+    except Exception as error:
+        logger.exception("Text chat request failed for session %s.", session.id)
+        raise HTTPException(
+            status_code=502,
+            detail="The text agent could not complete the request.",
+        ) from error
+
+    response_text = "".join(response_parts).strip()
+    if not response_text:
+        logger.error("Text agent returned no text for session %s.", session.id)
+        raise HTTPException(
+            status_code=502,
+            detail="The text agent returned no response.",
+        )
+
+    return ChatResponse(response=response_text, session_id=session.id)
 
 
 @app.websocket("/ws/audio")

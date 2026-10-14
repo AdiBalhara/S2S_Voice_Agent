@@ -8,6 +8,7 @@ Website → SitemapLoader → Documents → Chunking → Embeddings → PGVector
 import hashlib
 import logging
 import uuid
+from pathlib import Path
 from typing import Any
 
 from langchain_core.documents import Document
@@ -33,6 +34,36 @@ def _generate_doc_id(source: str, chunk_index: int, content: str) -> str:
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
     raw = f"{source}::chunk_{chunk_index}::{content_hash}"
     return str(uuid.uuid5(uuid.NAMESPACE_URL, raw))
+
+
+def _store_chunks(chunks: list[Document]) -> None:
+    """Store chunks in the shared vector table and ensure its HNSW index exists."""
+    logger.info("Preparing %d chunks for storage...", len(chunks))
+    doc_ids = [
+        _generate_doc_id(
+            chunk.metadata.get("source", "unknown"),
+            chunk.metadata.get("chunk_index", 0),
+            chunk.page_content,
+        )
+        for chunk in chunks
+    ]
+
+    logger.info("Generating embeddings and storing chunks in PGVector...")
+    vector_store = get_vector_store()
+    try:
+        vector_store.add_documents(chunks, ids=doc_ids)
+        logger.info("Successfully stored %d chunks in PGVector.", len(chunks))
+    except Exception as e:
+        logger.error("Failed to store documents in PGVector: %s", e)
+        raise
+
+    from app.config import VECTOR_TABLE_NAME
+
+    logger.info("Verifying HNSW index...")
+    if not verify_hnsw_index(VECTOR_TABLE_NAME):
+        logger.info("Creating HNSW index...")
+        create_hnsw_index(VECTOR_TABLE_NAME)
+    logger.info("HNSW index verified.")
 
 
 @traceable(name="build_company_knowledge_base", run_type="chain")
@@ -97,35 +128,8 @@ def build_company_knowledge_base(
             "documents_stored": 0,
         }
 
-    # Step 4: Generate deterministic IDs for deduplication
-    logger.info("Step 4: Preparing documents for storage...")
-    doc_ids: list[str] = []
-    for chunk in chunks:
-        source = chunk.metadata.get("source", "unknown")
-        chunk_index = chunk.metadata.get("chunk_index", 0)
-        doc_id = _generate_doc_id(source, chunk_index, chunk.page_content)
-        doc_ids.append(doc_id)
-
-    # Step 5: Store in PGVector
-    logger.info("Step 5: Generating embeddings and storing in PGVector...")
-    vector_store = get_vector_store()
-
-    try:
-        vector_store.add_documents(chunks, ids=doc_ids)
-        logger.info("Successfully stored %d chunks in PGVector.", len(chunks))
-    except Exception as e:
-        logger.error("Failed to store documents in PGVector: %s", e)
-        raise
-
-    # Step 6: Verify/create HNSW index
-    logger.info("Step 6: Verifying HNSW index...")
-    from app.config import VECTOR_TABLE_NAME
-
-    if not verify_hnsw_index(VECTOR_TABLE_NAME):
-        logger.info("Creating HNSW index...")
-        create_hnsw_index(VECTOR_TABLE_NAME)
-
-    logger.info("HNSW index verified.")
+    # Step 4: Generate deterministic IDs, store in PGVector, and verify the index.
+    _store_chunks(chunks)
 
     summary = {
         "status": "success",
@@ -142,4 +146,72 @@ def build_company_knowledge_base(
     logger.info("  Documents stored: %d", summary["documents_stored"])
     logger.info("=" * 60)
 
+    return summary
+
+
+@traceable(name="build_knowledge_base_from_markdown", run_type="chain")
+def build_knowledge_base_from_markdown(
+    markdown_path: str | Path,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> dict[str, Any]:
+    """Ingest a Markdown file into the same vector table used for website content."""
+    path = Path(markdown_path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Markdown file not found: {path}")
+
+    project_root = Path(__file__).resolve().parents[2]
+    try:
+        source = path.relative_to(project_root).as_posix()
+    except ValueError:
+        source = path.as_posix()
+
+    content = path.read_text(encoding="utf-8")
+    if not content.strip():
+        logger.warning("Markdown file is empty. Ingestion aborted: %s", path)
+        return {
+            "status": "no_documents",
+            "documents_loaded": 0,
+            "chunks_created": 0,
+            "documents_stored": 0,
+        }
+
+    logger.info("Starting Markdown ingestion for %s", path)
+    ensure_pgvector_extension()
+    init_vector_store_table()
+
+    document = Document(
+        page_content=content,
+        metadata={
+            "source": source,
+            "title": path.stem.replace("_", " ").title(),
+        },
+    )
+    chunks = chunk_documents(
+        [document],
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+    if not chunks:
+        logger.warning("No chunks created from Markdown file: %s", path)
+        return {
+            "status": "no_chunks",
+            "documents_loaded": 1,
+            "chunks_created": 0,
+            "documents_stored": 0,
+        }
+
+    _store_chunks(chunks)
+    summary = {
+        "status": "success",
+        "source": source,
+        "documents_loaded": 1,
+        "chunks_created": len(chunks),
+        "documents_stored": len(chunks),
+    }
+    logger.info(
+        "Markdown ingestion complete: %d chunks stored from %s.",
+        len(chunks),
+        source,
+    )
     return summary

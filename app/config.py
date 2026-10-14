@@ -45,6 +45,7 @@ GEMINI_API_KEY: str = _get_env("GEMINI_API_KEY", "GOOGLE_STUDIO_API", "GOOGLE_AP
 
 # --- Model Configuration ---
 GEMINI_LIVE_MODEL: str = _get_env("GEMINI_LIVE_MODEL", default="gemini-2.0-flash-live-001")
+GEMINI_TEXT_MODEL: str = _get_env("GEMINI_TEXT_MODEL", default="gemini-3.5-flash-lite")
 EMBEDDING_MODEL: str = _get_env("EMBEDDING_MODEL", default="models/gemini-embedding-001")
 
 # --- Database ---
@@ -120,6 +121,7 @@ def log_config_summary() -> None:
     """Log a safe configuration summary (no secrets)."""
     logger.info("Configuration Summary:")
     logger.info("  GEMINI_LIVE_MODEL: %s", GEMINI_LIVE_MODEL)
+    logger.info("  GEMINI_TEXT_MODEL: %s", GEMINI_TEXT_MODEL)
     logger.info("  EMBEDDING_MODEL: %s", EMBEDDING_MODEL)
     logger.info("  RAG_TOP_K: %d", RAG_TOP_K)
     logger.info("  CHUNK_SIZE: %d", CHUNK_SIZE)

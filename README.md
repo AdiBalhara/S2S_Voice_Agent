@@ -136,6 +136,7 @@ cp .env.example .env
 | `GEMINI_API_KEY` | **Yes** | — | Google AI Studio API key (fallback: `GOOGLE_STUDIO_API`, `GOOGLE_API_KEY`) |
 | `SUPABASE_DATABASE_URL` | **Yes** | — | PostgreSQL connection string (fallback: `DATABASE_URL`) |
 | `GEMINI_LIVE_MODEL` | No | `gemini-2.0-flash-live-001` | Live speech-to-speech Gemini model identifier |
+| `GEMINI_TEXT_MODEL` | No | `gemini-3.8-flash` | Gemini model for text request/response chat |
 | `EMBEDDING_MODEL` | No | `models/gemini-embedding-001` | Embedding model for LangChain vector search |
 | `VECTOR_DIMENSION` | No | `768` | Embedding dimensionality (768 with MRL support) |
 | `VECTOR_TABLE_NAME` | No | `langchain_documents` | Database table name for LangChain PGVectorStore |
@@ -214,6 +215,20 @@ uv run python scripts/ingest_website.py https://trijotech.com --max-pages 50 --c
 uv run python scripts/ingest_website.py https://trijotech.com --verbose
 ```
 
+### Markdown Ingestion
+
+Ingest the DMRC mock knowledge base into the same configured PGVector table used by website ingestion:
+
+```bash
+uv run python scripts/ingest_markdown.py
+```
+
+The command defaults to `data/dmrc_mock_data.md`. A different Markdown file and chunking options can be provided:
+
+```bash
+uv run python scripts/ingest_markdown.py data/dmrc_mock_data.md --chunk-size 800 --chunk-overlap 100
+```
+
 ### Document Deduplication Strategy
 To avoid duplicate entries on re-ingestion, each chunk generates a deterministic SHA-256 ID:
 ```python
@@ -269,6 +284,18 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 2. Click **"Start Conversation"** and allow microphone access when prompted.
 3. Speak naturally to Trija. You will see live audio waveforms, real-time transcription, tool call status, and hear Gemini Live's audio response in real time.
 4. Click **"End Conversation"** to disconnect.
+
+### Text Chat API
+
+Send a text turn to `POST /api/chat`. Omit `session_id` to start a new conversation, then pass the returned ID on later requests to continue it:
+
+```bash
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"What metro lines connect to the airport?"}'
+```
+
+The response contains `response` and `session_id`. The text endpoint uses `GEMINI_TEXT_MODEL` and the same agent instructions and tools as the voice endpoint; the voice model remains configured independently.
 
 ### Option B: Google ADK Web UI
 

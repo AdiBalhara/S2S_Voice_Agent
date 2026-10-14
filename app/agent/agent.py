@@ -24,26 +24,31 @@ from app.config import GEMINI_API_KEY, GEMINI_LIVE_MODEL
 logger = logging.getLogger(__name__)
 
 
-def create_agent() -> Agent:
+def create_agent(model: str | None = None) -> Agent:
     """
-    Create and configure the ADK voice sales agent.
+    Create and configure the ADK sales agent.
+
+    Args:
+        model: Optional model override. Defaults to the configured Live model
+            used by the voice endpoint.
     
     Returns:
-        A configured Google ADK Agent with Gemini Live model and tools.
+        A configured Google ADK Agent with the selected model and tools.
     """
     # Ensure API key is set in environment for ADK
     if GEMINI_API_KEY:
         os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
 
-    logger.info("Creating ADK Agent with model: %s", GEMINI_LIVE_MODEL)
+    selected_model = model or GEMINI_LIVE_MODEL
+    logger.info("Creating ADK Agent with model: %s", selected_model)
 
     agent = Agent(
         name="trija_voice_agent",
-        model=GEMINI_LIVE_MODEL,
+        model=selected_model,
         instruction=AGENT_INSTRUCTIONS,
         tools=[
             search_company_knowledge,
-            transfer_to_human,
+            # transfer_to_human,
         ],
         description=(
             "Trija is a professional voice sales representative for TrijoTech. "

@@ -191,3 +191,65 @@ class TestIngestionErrorHandling:
         assert len(chunks) > 0
         for chunk in chunks:
             assert "chunk_index" in chunk.metadata
+
+
+class TestMarkdownIngestion:
+    """Tests for Markdown-to-vector-store ingestion."""
+
+    @patch("app.ingestion.pipeline.verify_hnsw_index", return_value=True)
+    @patch("app.ingestion.pipeline.get_vector_store")
+    @patch("app.ingestion.pipeline.init_vector_store_table")
+    @patch("app.ingestion.pipeline.ensure_pgvector_extension")
+    def test_markdown_content_is_chunked_and_stored(
+        self,
+        mock_ensure_extension,
+        mock_init_table,
+        mock_get_vector_store,
+        mock_verify_index,
+        tmp_path,
+    ):
+        """Markdown chunks use the existing vector store and deterministic IDs."""
+        from app.ingestion.pipeline import build_knowledge_base_from_markdown
+
+        markdown_path = tmp_path / "metro_info.md"
+        markdown_path.write_text(
+            "# Metro information\n\n" + "The metro connects stations. " * 30,
+            encoding="utf-8",
+        )
+        vector_store = MagicMock()
+        mock_get_vector_store.return_value = vector_store
+
+        summary = build_knowledge_base_from_markdown(
+            markdown_path,
+            chunk_size=100,
+            chunk_overlap=10,
+        )
+
+        assert summary["status"] == "success"
+        assert summary["documents_loaded"] == 1
+        assert summary["chunks_created"] > 1
+        assert summary["documents_stored"] == summary["chunks_created"]
+        mock_ensure_extension.assert_called_once()
+        mock_init_table.assert_called_once()
+        mock_verify_index.assert_called_once()
+
+        chunks = vector_store.add_documents.call_args.args[0]
+        ids = vector_store.add_documents.call_args.kwargs["ids"]
+        assert len(chunks) == len(ids) == summary["chunks_created"]
+        assert all(chunk.metadata["title"] == "Metro Info" for chunk in chunks)
+        assert all(chunk.metadata["source"].endswith("metro_info.md") for chunk in chunks)
+
+        vector_store.add_documents.reset_mock()
+        build_knowledge_base_from_markdown(
+            markdown_path,
+            chunk_size=100,
+            chunk_overlap=10,
+        )
+        assert vector_store.add_documents.call_args.kwargs["ids"] == ids
+
+    def test_markdown_file_must_exist(self, tmp_path):
+        """A missing input file fails explicitly rather than reporting success."""
+        from app.ingestion.pipeline import build_knowledge_base_from_markdown
+
+        with pytest.raises(FileNotFoundError, match="Markdown file not found"):
+            build_knowledge_base_from_markdown(tmp_path / "missing.md")
